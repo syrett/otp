@@ -20,7 +20,7 @@
 
 -include_lib("test_server/include/test_server.hrl").
 
--export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
+-export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1,
 	 init_per_group/2,end_per_group/2]).
 -export([start/1, add_handler/1, add_sup_handler/1,
 	 delete_handler/1, swap_handler/1, swap_sup_handler/1,
@@ -30,11 +30,11 @@
 
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
-all() -> 
+all() ->
     [start, {group, test_all}, hibernate,
      call_format_status, call_format_status_anon, error_format_status].
 
-groups() -> 
+groups() ->
     [{test_all, [],
       [add_handler, add_sup_handler, delete_handler,
        swap_handler, swap_sup_handler, notify, sync_notify,
@@ -62,6 +62,8 @@ start(suite) -> [];
 start(Config) when is_list(Config) ->
     OldFl = process_flag(trap_exit, true),
 
+    ?line dummy_via:reset(),
+
     ?line {ok, Pid0} = gen_event:start(), %anonymous
     ?line [] = gen_event:which_handlers(Pid0),
     ?line ok = gen_event:stop(Pid0),
@@ -85,6 +87,11 @@ start(Config) when is_list(Config) ->
     ?line [] = gen_event:which_handlers(Pid4),
     ?line ok = gen_event:stop({global, my_dummy_name}),
 
+    ?line {ok, Pid5} = gen_event:start_link({via, dummy_via, my_dummy_name}),
+    ?line [] = gen_event:which_handlers({via, dummy_via, my_dummy_name}),
+    ?line [] = gen_event:which_handlers(Pid5),
+    ?line ok = gen_event:stop({via, dummy_via, my_dummy_name}),
+
     ?line {ok, _} = gen_event:start_link({local, my_dummy_name}),
     ?line {error, {already_started, _}} =
 	gen_event:start_link({local, my_dummy_name}),
@@ -92,15 +99,28 @@ start(Config) when is_list(Config) ->
 	gen_event:start({local, my_dummy_name}),
     ?line ok = gen_event:stop(my_dummy_name),
 
-    ?line {ok, Pid5} = gen_event:start_link({global, my_dummy_name}),
+    ?line {ok, Pid6} = gen_event:start_link({global, my_dummy_name}),
     ?line {error, {already_started, _}} =
 	gen_event:start_link({global, my_dummy_name}),
     ?line {error, {already_started, _}} =
 	gen_event:start({global, my_dummy_name}),
 
-    exit(Pid5, shutdown),
+    exit(Pid6, shutdown),
     receive
-	{'EXIT', Pid5, shutdown} -> ok
+	{'EXIT', Pid6, shutdown} -> ok
+    after 10000 ->
+	    ?t:fail(exit_gen_event)
+    end,
+
+    ?line {ok, Pid7} = gen_event:start_link({via, dummy_via, my_dummy_name}),
+    ?line {error, {already_started, _}} =
+	gen_event:start_link({via, dummy_via, my_dummy_name}),
+    ?line {error, {already_started, _}} =
+	gen_event:start({via, dummy_via, my_dummy_name}),
+
+    exit(Pid7, shutdown),
+    receive
+	{'EXIT', Pid7, shutdown} -> ok
     after 10000 ->
 	    ?t:fail(exit_gen_event)
     end,
@@ -120,36 +140,36 @@ hibernate(Config) when is_list(Config) ->
     ?line {current_function,{erlang,hibernate,3}} = erlang:process_info(Pid,current_function),
     ?line Pid ! wake,
     ?line receive after 1000 -> ok end,
-    ?line true = ({current_function,{erlang,hibernate,3}} =/= 
-		  erlang:process_info(Pid,current_function)),    
+    ?line true = ({current_function,{erlang,hibernate,3}} =/=
+		  erlang:process_info(Pid,current_function)),
     ?line later = gen_event:call(my_dummy_handler, dummy_h, hibernate_later),
-    ?line true = ({current_function,{erlang,hibernate,3}} =/= 
-		  erlang:process_info(Pid,current_function)),    
+    ?line true = ({current_function,{erlang,hibernate,3}} =/=
+		  erlang:process_info(Pid,current_function)),
     ?line receive after 2000 -> ok end,
     ?line {current_function,{erlang,hibernate,3}} = erlang:process_info(Pid,current_function),
     ?line Pid ! wake,
     ?line receive after 1000 -> ok end,
-    ?line true = ({current_function,{erlang,hibernate,3}} =/= 
-		  erlang:process_info(Pid,current_function)),    
+    ?line true = ({current_function,{erlang,hibernate,3}} =/=
+		  erlang:process_info(Pid,current_function)),
     ?line gen_event:notify(my_dummy_handler,hibernate),
     ?line receive after 1000 -> ok end,
     ?line {current_function,{erlang,hibernate,3}} = erlang:process_info(Pid,current_function),
     ?line gen_event:notify(my_dummy_handler,wakeup),
     ?line receive after 1000 -> ok end,
-    ?line true = ({current_function,{erlang,hibernate,3}} =/= 
-		  erlang:process_info(Pid,current_function)),    
+    ?line true = ({current_function,{erlang,hibernate,3}} =/=
+		  erlang:process_info(Pid,current_function)),
     ?line gen_event:notify(my_dummy_handler,hibernate),
     ?line receive after 1000 -> ok end,
     ?line {current_function,{erlang,hibernate,3}} = erlang:process_info(Pid,current_function),
     ?line gen_event:sync_notify(my_dummy_handler,wakeup),
-    ?line true = ({current_function,{erlang,hibernate,3}} =/= 
-		  erlang:process_info(Pid,current_function)),    
+    ?line true = ({current_function,{erlang,hibernate,3}} =/=
+		  erlang:process_info(Pid,current_function)),
     ?line ok = gen_event:sync_notify(my_dummy_handler,hibernate),
     ?line receive after 1000 -> ok end,
     ?line {current_function,{erlang,hibernate,3}} = erlang:process_info(Pid,current_function),
     ?line Pid ! wake,
     ?line receive after 1000 -> ok end,
-    ?line true = ({current_function,{erlang,hibernate,3}} =/= 
+    ?line true = ({current_function,{erlang,hibernate,3}} =/=
 		  erlang:process_info(Pid,current_function)),
     ?line ok = gen_event:add_handler(my_dummy_handler, dummy1_h, [self()]),
     ?line [_,_] = gen_event:which_handlers(my_dummy_handler),
@@ -161,7 +181,7 @@ hibernate(Config) when is_list(Config) ->
     ?line {current_function,{erlang,hibernate,3}} = erlang:process_info(Pid,current_function),
     ?line Pid ! wake,
     ?line receive after 1000 -> ok end,
-    ?line true = ({current_function,{erlang,hibernate,3}} =/= 
+    ?line true = ({current_function,{erlang,hibernate,3}} =/=
 		  erlang:process_info(Pid,current_function)),
     ?line Pid ! gnurf,
     ?line receive after 1000 -> ok end,
@@ -171,7 +191,7 @@ hibernate(Config) when is_list(Config) ->
     ?line {current_function,{erlang,hibernate,3}} = erlang:process_info(Pid,current_function),
     ?line Pid ! wake,
     ?line receive after 1000 -> ok end,
-    ?line true = ({current_function,{erlang,hibernate,3}} =/= 
+    ?line true = ({current_function,{erlang,hibernate,3}} =/=
 		  erlang:process_info(Pid,current_function)),
     ?line ok = gen_event:stop(my_dummy_handler),
     ?line {ok,Pid2} = gen_event:start({local, my_dummy_handler}),
@@ -186,9 +206,9 @@ hibernate(Config) when is_list(Config) ->
     ?line {current_function,{erlang,hibernate,3}} = erlang:process_info(Pid2,current_function),
     ?line Pid2 ! wake,
     ?line receive after 1000 -> ok end,
-    ?line true = ({current_function,{erlang,hibernate,3}} =/= 
+    ?line true = ({current_function,{erlang,hibernate,3}} =/=
 		  erlang:process_info(Pid2,current_function)),
-   
+
 
     ?line ok = gen_event:stop(my_dummy_handler),
 
@@ -319,7 +339,7 @@ swap_handler(Config) when is_list(Config) ->
 
     ?line ok = gen_event:stop(my_dummy_handler),
     ok.
-	
+
 swap_sup_handler(doc) -> [];
 swap_sup_handler(suite) -> [];
 swap_sup_handler(Config) when is_list(Config) ->
@@ -361,7 +381,7 @@ swap_sup_handler(Config) when is_list(Config) ->
 
     ?line ok = gen_event:stop(my_dummy_handler),
     ok.
-	
+
 notify(doc) -> [];
 notify(suite) -> [];
 notify(Config) when is_list(Config) ->

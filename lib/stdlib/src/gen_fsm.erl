@@ -19,7 +19,7 @@
 -module(gen_fsm).
 
 %%%-----------------------------------------------------------------
-%%%   
+%%%
 %%% This state machine is somewhat more pure than state_lib.  It is
 %%% still based on State dispatching (one function per state), but
 %%% allows a function handle_event to take care of events in all states.
@@ -165,7 +165,7 @@
 %%% start(Name, Mod, Args, Options)
 %%% start_link(Mod, Args, Options)
 %%% start_link(Name, Mod, Args, Options) where:
-%%%    Name ::= {local, atom()} | {global, atom()}
+%%%    Name ::= {local, atom()} | {global, atom()} | {via, atom(), term()}
 %%%    Mod  ::= atom(), callback module implementing the 'real' fsm
 %%%    Args ::= term(), init arguments (to Mod:init/1)
 %%%    Options ::= [{debug, [Flag]}]
@@ -191,6 +191,9 @@ start_link(Name, Mod, Args, Options) ->
 send_event({global, Name}, Event) ->
     catch global:send(Name, {'$gen_event', Event}),
     ok;
+send_event({via, Mod, Name}, Event) ->
+    catch Mod:send(Name, {'$gen_event', Event}),
+    ok;
 send_event(Name, Event) ->
     Name ! {'$gen_event', Event},
     ok.
@@ -213,6 +216,9 @@ sync_send_event(Name, Event, Timeout) ->
 
 send_all_state_event({global, Name}, Event) ->
     catch global:send(Name, {'$gen_all_state_event', Event}),
+    ok;
+send_all_state_event({via, Mod, Name}, Event) ->
+    catch Mod:send(Name, {'$gen_all_state_event', Event}),
     ok;
 send_all_state_event(Name, Event) ->
     Name ! {'$gen_all_state_event', Event},
@@ -241,7 +247,7 @@ sync_send_all_state_event(Name, Event, Timeout) ->
 %% e.g. when straddling a failover, or turn up in a restarted
 %% instance of the process.
 
-%% Returns Ref, sends event {timeout,Ref,Msg} after Time 
+%% Returns Ref, sends event {timeout,Ref,Msg} after Time
 %% to the (then) current state.
 start_timer(Time, Msg) ->
     erlang:start_timer(Time, self(), {'$gen_timer', Msg}).
@@ -250,13 +256,13 @@ start_timer(Time, Msg) ->
 send_event_after(Time, Event) ->
     erlang:start_timer(Time, self(), {'$gen_event', Event}).
 
-%% Returns the remaing time for the timer if Ref referred to 
+%% Returns the remaing time for the timer if Ref referred to
 %% an active timer/send_event_after, false otherwise.
 cancel_timer(Ref) ->
     case erlang:cancel_timer(Ref) of
 	false ->
 	    receive {timeout, Ref, _} -> 0
-	    after 0 -> false 
+	    after 0 -> false
 	    end;
 	RemainingTime ->
 	    RemainingTime
@@ -273,7 +279,10 @@ cancel_timer(Ref) ->
 enter_loop(Mod, Options, StateName, StateData) ->
     enter_loop(Mod, Options, StateName, StateData, self(), infinity).
 
-enter_loop(Mod, Options, StateName, StateData, ServerName = {_,_}) ->
+enter_loop(Mod, Options, StateName, StateData, {Scope,_} = ServerName)
+  when Scope == local; Scope == global ->
+    enter_loop(Mod, Options, StateName, StateData, ServerName,infinity);
+enter_loop(Mod, Options, StateName, StateData, {via,_,_} = ServerName) ->
     enter_loop(Mod, Options, StateName, StateData, ServerName,infinity);
 enter_loop(Mod, Options, StateName, StateData, Timeout) ->
     enter_loop(Mod, Options, StateName, StateData, self(), Timeout).
@@ -303,6 +312,15 @@ get_proc_name({global, Name}) ->
 	    Name;
 	_Pid ->
 	    exit(process_not_registered_globally)
+    end;
+get_proc_name({via, Mod, Name}) ->
+    case Mod:whereis_name(Name) of
+	undefined ->
+	    exit({process_not_registered_via, Mod});
+	Pid when Pid =:= self() ->
+	    Name;
+	_Pid ->
+	    exit({process_not_registered_via, Mod})
     end.
 
 get_parent() ->
@@ -342,10 +360,10 @@ init_it(Starter, Parent, Name0, Mod, Args, Options) ->
     Debug = gen:debug_options(Options),
     case catch Mod:init(Args) of
 	{ok, StateName, StateData} ->
-	    proc_lib:init_ack(Starter, {ok, self()}), 	    
+	    proc_lib:init_ack(Starter, {ok, self()}),
 	    loop(Parent, Name, StateName, StateData, Mod, infinity, Debug);
 	{ok, StateName, StateData, Timeout} ->
-	    proc_lib:init_ack(Starter, {ok, self()}), 	    
+	    proc_lib:init_ack(Starter, {ok, self()}),
 	    loop(Parent, Name, StateName, StateData, Mod, Timeout, Debug);
 	{stop, Reason} ->
 	    unregister_name(Name0),
@@ -367,12 +385,15 @@ init_it(Starter, Parent, Name0, Mod, Args, Options) ->
 
 name({local,Name}) -> Name;
 name({global,Name}) -> Name;
+name({via,_, Name}) -> Name;
 name(Pid) when is_pid(Pid) -> Pid.
 
 unregister_name({local,Name}) ->
     _ = (catch unregister(Name));
 unregister_name({global,Name}) ->
     _ = global:unregister_name(Name);
+unregister_name({via, Mod, Name}) ->
+    _ = Mod:unregister_name(Name);
 unregister_name(Pid) when is_pid(Pid) ->
     Pid.
 
@@ -381,7 +402,7 @@ unregister_name(Pid) when is_pid(Pid) ->
 %%-----------------------------------------------------------------
 loop(Parent, Name, StateName, StateData, Mod, hibernate, Debug) ->
     proc_lib:hibernate(?MODULE,wake_hib,
-		       [Parent, Name, StateName, StateData, Mod, 
+		       [Parent, Name, StateName, StateData, Mod,
 			Debug]);
 loop(Parent, Name, StateName, StateData, Mod, Time, Debug) ->
     Msg = receive
@@ -471,7 +492,7 @@ print_event(Dev, return, {Name, StateName}) ->
 handle_msg(Msg, Parent, Name, StateName, StateData, Mod, _Time) -> %No debug here
     From = from(Msg),
     case catch dispatch(Msg, Mod, StateName, StateData) of
-	{next_state, NStateName, NStateData} ->	    
+	{next_state, NStateName, NStateData} ->
 	    loop(Parent, Name, NStateName, NStateData, Mod, infinity, []);
 	{next_state, NStateName, NStateData, Time1} ->
 	    loop(Parent, Name, NStateName, NStateData, Mod, Time1, []);
@@ -592,7 +613,7 @@ terminate(Reason, Name, Msg, Mod, StateName, StateData, Debug) ->
     end.
 
 error_info(Reason, Name, Msg, StateName, StateData, Debug) ->
-    Reason1 = 
+    Reason1 =
 	case Reason of
 	    {undef,[{M,F,A,L}|MFAs]} ->
 		case code:is_loaded(M) of
